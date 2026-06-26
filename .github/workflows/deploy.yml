@@ -24,6 +24,5 @@ jobs:
             --chmod=D750,F640 \
             --exclude='.git' \
             --exclude='.github' \
-            --exclude='README.md' \
             -e "ssh -i ~/.ssh/deploy_key" \
             ./ ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/var/www/albebu/html/

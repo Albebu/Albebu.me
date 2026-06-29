@@ -1,10 +1,9 @@
 import { marked } from "marked";
-import { cpSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 const ROOT = import.meta.dir;
 const DIST = join(ROOT, "dist");
-const POSTS = join(ROOT, "posts");
 
 interface Post {
   slug: string;
@@ -14,6 +13,31 @@ interface Post {
   summary: string;
   html: string;
 }
+
+// Two separate streams, each its own source dir, output dir and index.
+// blog = curated (work, best of projects); notes = learning log, kept apart
+// so it doesn't dilute the blog. Add a third collection by appending here.
+interface Collection {
+  src: string; // source dir with the .md files
+  out: string; // output dir + URL segment (/blog/, /notes/)
+  title: string;
+  blurb: string; // one line under the index title
+}
+
+const COLLECTIONS: Collection[] = [
+  {
+    src: "posts",
+    out: "blog",
+    title: "Blog",
+    blurb: "Cosas que construyo: trabajo y lo mejor de mis proyectos.",
+  },
+  {
+    src: "notes",
+    out: "notes",
+    title: "Notes",
+    blurb: "Apuntes de lo que voy aprendiendo.",
+  },
+];
 
 // --- frontmatter: lines between the first pair of `---` fences ---
 function parse(raw: string): { meta: Record<string, string>; body: string } {
@@ -103,11 +127,11 @@ ${body}
 `;
 }
 
-function postPage(p: Post): string {
+function postPage(p: Post, c: Collection): string {
   return shell(
     `${p.title} — Albebu`,
     p.summary,
-    `      <header class="top"><a class="back" href="/blog/">← all notes</a></header>
+    `      <header class="top"><a class="back" href="/${c.out}/">← ${c.title.toLowerCase()}</a></header>
       <h1>${p.title}</h1>
       <div class="meta">${p.date}${p.tag ? `<span class="tag">${p.tag}</span>` : ""}</div>
       <article>
@@ -116,62 +140,76 @@ ${p.html}
   );
 }
 
-function indexPage(posts: Post[]): string {
-  const items = posts
-    .map(
-      (p) => `        <li>
+function indexPage(posts: Post[], c: Collection): string {
+  const items = posts.length
+    ? posts
+        .map(
+          (p) => `        <li>
           <div class="row">
             <span class="date">${p.date}</span>
-            <a class="title" href="/blog/${p.slug}.html">${p.title}</a>
+            <a class="title" href="/${c.out}/${p.slug}.html">${p.title}</a>
             ${p.tag ? `<span class="tag">${p.tag}</span>` : ""}
           </div>
           ${p.summary ? `<div class="desc">${p.summary}</div>` : ""}
         </li>`,
-    )
-    .join("\n");
+        )
+        .join("\n")
+    : `        <li><span class="desc">Aún nada por aquí.</span></li>`;
 
   return shell(
-    "Notes — Albebu",
-    "Things Alex Bellosta builds and learns.",
+    `${c.title} — Albebu`,
+    c.blurb,
     `      <header class="top"><a class="back" href="/">← albebu.me</a></header>
-      <h1>Notes</h1>
-      <div class="meta">Lo que voy construyendo y aprendiendo.</div>
+      <h1>${c.title}</h1>
+      <div class="meta">${c.blurb}</div>
       <ul class="list">
 ${items}
       </ul>`,
   );
 }
 
+async function buildCollection(c: Collection): Promise<number> {
+  const dir = join(ROOT, c.src);
+  // Always emit the index (even empty) so /blog/ and /notes/ never 404.
+  const files = existsSync(dir)
+    ? readdirSync(dir).filter((f) => f.endsWith(".md"))
+    : [];
+  const posts: Post[] = await Promise.all(
+    files.map(async (file) => {
+      const { meta, body } = parse(await Bun.file(join(dir, file)).text());
+      return {
+        slug: file.replace(/\.md$/, ""),
+        title: meta.title ?? file,
+        date: meta.date ?? "",
+        tag: meta.tag ?? "",
+        summary: meta.summary ?? "",
+        html: marked.parse(body, { async: false }) as string,
+      };
+    }),
+  );
+
+  posts.sort((a, b) => b.date.localeCompare(a.date)); // newest first
+
+  mkdirSync(join(DIST, c.out), { recursive: true });
+  for (const p of posts)
+    await Bun.write(join(DIST, c.out, `${p.slug}.html`), postPage(p, c));
+  await Bun.write(join(DIST, c.out, "index.html"), indexPage(posts, c));
+
+  return posts.length;
+}
+
 // --- build ---
 rmSync(DIST, { recursive: true, force: true });
-mkdirSync(join(DIST, "blog"), { recursive: true });
+mkdirSync(DIST, { recursive: true });
 
 // static passthrough
 for (const f of ["index.html", "404.html"])
   cpSync(join(ROOT, f), join(DIST, f));
 cpSync(join(ROOT, "public"), join(DIST, "public"), { recursive: true });
 
-// posts
-const files = readdirSync(POSTS).filter((f) => f.endsWith(".md"));
-const posts: Post[] = await Promise.all(
-  files.map(async (file) => {
-    const { meta, body } = parse(await Bun.file(join(POSTS, file)).text());
-    const slug = file.replace(/\.md$/, "");
-    return {
-      slug,
-      title: meta.title ?? slug,
-      date: meta.date ?? "",
-      tag: meta.tag ?? "",
-      summary: meta.summary ?? "",
-      html: marked.parse(body, { async: false }) as string,
-    };
-  }),
-);
-
-posts.sort((a, b) => b.date.localeCompare(a.date)); // newest first
-
-for (const p of posts)
-  await Bun.write(join(DIST, "blog", `${p.slug}.html`), postPage(p));
-await Bun.write(join(DIST, "blog", "index.html"), indexPage(posts));
-
-console.log(`Built ${posts.length} post(s) → dist/`);
+// one stream per collection
+for (const c of COLLECTIONS) {
+  const n = await buildCollection(c);
+  console.log(`  ${c.out}: ${n} post(s)`);
+}
+console.log("Built → dist/");

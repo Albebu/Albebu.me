@@ -11,6 +11,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Build site
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
       - name: Set up SSH
         run: |
           mkdir -p ~/.ssh
@@ -22,7 +30,5 @@ jobs:
         run: |
           rsync -rvz --delete \
             --chmod=D750,F640 \
-            --exclude='.git' \
-            --exclude='.github' \
             -e "ssh -i ~/.ssh/deploy_key" \
-            ./ ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/var/www/albebu/html/
+            ./dist/ ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/var/www/albebu/html/
